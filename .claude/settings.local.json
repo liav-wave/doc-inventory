@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x /Users/liav/projects/doc-inventory/gam_inventory.sh)",
+      "Bash(/Users/liav/bin/gam7/gam user:*)",
+      "Bash(/Users/liav/bin/gam7/gam version:*)"
+    ]
+  }
+}
