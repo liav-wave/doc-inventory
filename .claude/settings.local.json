@@ -3,7 +3,12 @@
     "allow": [
       "Bash(chmod +x /Users/liav/projects/doc-inventory/gam_inventory.sh)",
       "Bash(/Users/liav/bin/gam7/gam user:*)",
-      "Bash(/Users/liav/bin/gam7/gam version:*)"
+      "Bash(/Users/liav/bin/gam7/gam version:*)",
+      "Bash(GAM_PATH=/Users/liav/bin/gam7/gam GAM_ADMIN=liav.test@wavefronttesting.com ./gam_inventory.sh)",
+      "Bash(/Users/liav/bin/gam7/gam add:*)",
+      "Bash(chmod +x /Users/liav/projects/doc-inventory/test_inventory.sh)",
+      "Bash(GAM_PATH=/Users/liav/bin/gam7/gam GAM_ADMIN=liav.test@wavefronttesting.com ./test_inventory.sh)",
+      "Bash(/Users/liav/bin/gam7/gam print:*)"
     ]
   }
 }
