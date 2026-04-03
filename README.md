@@ -31,12 +31,27 @@ Each output CSV contains: `Owner`, `id`, `name`, `mimeType`, `webViewLink`.
    chmod +x gam_inventory.sh
    ```
 
-2. Set the required environment variables:
+2. Install and configure [GAM 7](https://github.com/GAM-team/GAM/wiki) if not already present:
+
+   ```sh
+   # Create OAuth credentials
+   gam oauth create
+
+   # Create and authorize the service account for domain-wide delegation
+   gam create project
+   gam user admin@clientdomain.com check serviceaccount
+   ```
+
+   All scopes must show **PASS**, especially the Drive scopes. If any fail, follow the prompts to authorize them in the Google Admin Console under **Security > API Controls > Domain-wide Delegation**.
+
+3. Set the required environment variables:
 
    ```sh
    export GAM_PATH="/path/to/gam"
-   export GAM_ADMIN="admin@yourdomain.com"
+   export GAM_ADMIN="admin@clientdomain.com"
    ```
+
+   `GAM_ADMIN` must be a **super-admin** account. The script uses this identity to enumerate all shared drives, list all users, and temporarily access drives the admin isn't a member of.
 
    Or pass them as positional arguments (see Usage below).
 
@@ -80,6 +95,43 @@ GAM produces CSV output where each file's permissions are flattened into columns
 To handle this, the script writes each GAM call to a separate CSV chunk file. The categorizer processes each chunk independently with its own header, avoiding column misalignment.
 
 A file is considered publicly shared when any `permissions.N.type` column equals `anyone`. The `allowFileDiscovery` flag on that same permission distinguishes internet-searchable files from link-only files.
+
+## Important: Shared Drive ACL behavior
+
+For shared drives the admin is **not** already a member of, the script temporarily grants **organizer** access, scans the drive, then immediately removes the access. This is tracked and cleaned up automatically, including on script interruption (SIGINT/SIGTERM).
+
+**Communicate this to the client before running.** The temporary ACL grants will appear in the Google Admin audit log. If the script crashes hard enough that the trap doesn't fire (e.g., `kill -9`, power loss), orphaned ACLs may remain. Check for these with:
+
+```sh
+# List ACLs on a specific shared drive
+gam print drivefileacls <drive_id> | grep "$GAM_ADMIN"
+```
+
+To remove an orphaned ACL manually:
+
+```sh
+gam delete drivefileacl <drive_id> admin@clientdomain.com
+```
+
+## Running tests
+
+Run the integration tests against a **test/staging Workspace**, not production:
+
+```sh
+GAM_PATH=/path/to/gam GAM_ADMIN=admin@testdomain.com ./test_inventory.sh
+```
+
+The tests require at least one shared drive the admin **is** a member of, and ideally one they are **not** a member of (to test temp ACL cleanup). Tests run against live data — they call `gam_inventory.sh` end-to-end.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Another instance is running` | Stale lockfile from a crashed run | `rm -rf ~/doc_inventory/.inventory.lock` |
+| `Output directory is a symlink` | `~/doc_inventory` is a symlink | Remove the symlink; the script creates the directory itself |
+| Output CSVs are empty | GAM can't access drives (scope/delegation issue) | Run `gam user <admin> check serviceaccount` and fix any FAIL scopes |
+| `FAILED to remove temp organizer access` | ACL cleanup failed for a shared drive | Remove manually (see ACL section above); check `run.log` for the drive ID |
+| `GAM exited with code 60` | No files found on a drive | Normal — means the drive is empty, not an error |
 
 ## Security considerations
 
