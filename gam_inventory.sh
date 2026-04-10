@@ -16,8 +16,7 @@
 #   ./gam_inventory.sh /path/to/gam admin@example.com
 #
 # Outputs (in ~/doc_inventory/):
-#   public_internet.csv  — type=anyone, allowFileDiscovery=True
-#   public_link.csv      — type=anyone, allowFileDiscovery=False
+#   filelistperms.csv    — one row per non-owner permission across all files
 #   run.log              — timestamped audit log of the run
 
 set -euo pipefail
@@ -98,7 +97,7 @@ trap cleanup_on_exit EXIT INT TERM HUP
 
 # ── Clean previous run artifacts ─────────────────────────────────────────────
 
-rm -f "$OUTDIR/public_internet.csv" "$OUTDIR/public_link.csv"
+rm -f "$OUTDIR/filelistperms.csv"
 rm -f "$CHUNKS_DIR"/*.csv 2>/dev/null || true
 rm -f "$ERROR_LOG"
 
@@ -234,6 +233,24 @@ if [[ -s "$DRIVES_CSV" ]]; then
             select teamdriveid "$drive_id" \
             fields id,name,mimeType,webViewLink,permissions
 
+        # Fix Owner column: GAM sets it to the querying admin, but shared
+        # drive files are owned by the drive, not the admin user.
+        local sd_chunk="$CHUNKS_DIR/chunk_${chunk_num}.csv"
+        if [[ -f "$sd_chunk" ]]; then
+            python3 -c "
+import csv, sys, io
+with open(sys.argv[1], 'r') as f:
+    rows = list(csv.DictReader(f))
+if rows and 'Owner' in rows[0]:
+    for r in rows:
+        r['Owner'] = sys.argv[2]
+    with open(sys.argv[1], 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+" "$sd_chunk" "$name (shared drive)"
+        fi
+
         # Only remove access if we added it
         if $acl_added; then
             if "$GAM" delete drivefileacl "$drive_id" "$ADMIN" >>"$ERROR_LOG" 2>&1; then
@@ -299,7 +316,7 @@ fi
 
 log "=== Run complete ==="
 log "Results in $OUTDIR/"
-ls -lh "$OUTDIR/public_internet.csv" "$OUTDIR/public_link.csv" 2>/dev/null
+ls -lh "$OUTDIR/filelistperms.csv" 2>/dev/null
 
 # Exit non-zero if any ACL cleanup failed
 [[ $acl_cleanup_failures -eq 0 ]]

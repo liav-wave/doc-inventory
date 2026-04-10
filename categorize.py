@@ -1,19 +1,58 @@
 #!/usr/bin/env python3
 """
-Categorize GAM file listing chunks into public-access categories.
+Categorize GAM file listing chunks into a single permission inventory.
 
 Reads CSV chunks from <outdir>/chunks/ and outputs:
-  <outdir>/public_internet.csv  → type=anyone, allowFileDiscovery=True
-  <outdir>/public_link.csv      → type=anyone, allowFileDiscovery=False
+  <outdir>/filelistperms.csv  → one row per non-owner permission
+
+Output columns match V1 format:
+  Owner, id, name, mimeType, permission.allowFileDiscovery,
+  permission.deleted, permission.displayName, permission.domain,
+  permission.emailAddress, permission.id, permission.role, permission.type
 """
 
 import csv
 import glob
 import os
+import re
 import sys
 
 # Characters that can trigger formula execution in Excel/Sheets
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+# Output columns — must match V1 format exactly
+OUT_FIELDS = [
+    "Owner",
+    "id",
+    "name",
+    "mimeType",
+    "permission.allowFileDiscovery",
+    "permission.deleted",
+    "permission.displayName",
+    "permission.domain",
+    "permission.emailAddress",
+    "permission.id",
+    "permission.role",
+    "permission.type",
+]
+
+# File-level fields (copied directly from the GAM row)
+_FILE_FIELDS = ["Owner", "id", "name", "mimeType"]
+
+# Permission sub-fields that GAM outputs as permissions.N.<field>
+_PERM_SUBFIELDS = [
+    "allowFileDiscovery",
+    "deleted",
+    "displayName",
+    "domain",
+    "emailAddress",
+    "id",
+    "role",
+    "type",
+]
+
+# Regex to find permission index groups in GAM headers
+_PERM_IDX_RE = re.compile(r"^permissions\.(\d+)\.")
 
 
 def _sanitize_cell(value: str) -> str:
@@ -23,20 +62,27 @@ def _sanitize_cell(value: str) -> str:
     return value
 
 
+def _find_permission_indices(fieldnames: list[str]) -> list[int]:
+    """Return sorted unique permission indices found in the CSV header."""
+    indices: set[int] = set()
+    for fn in fieldnames:
+        if fn is None:
+            continue
+        m = _PERM_IDX_RE.match(fn)
+        if m:
+            indices.add(int(m.group(1)))
+    return sorted(indices)
+
+
 def categorize(chunks_dir: str, outdir: str) -> dict:
-    internet_file = os.path.join(outdir, "public_internet.csv")
-    link_file = os.path.join(outdir, "public_link.csv")
+    out_file = os.path.join(outdir, "filelistperms.csv")
 
-    out_fields = ["Owner", "id", "name", "mimeType", "webViewLink"]
-
-    seen_internet: set[str] = set()
-    seen_link: set[str] = set()
-    internet_rows: list[dict] = []
-    link_rows: list[dict] = []
+    rows: list[dict] = []
+    total_files = 0
+    total_permissions = 0
+    skipped_chunks = 0
 
     chunk_files = sorted(glob.glob(os.path.join(chunks_dir, "chunk_*.csv")))
-    total_files = 0
-    skipped_chunks = 0
 
     for chunk_path in chunk_files:
         if os.path.getsize(chunk_path) == 0:
@@ -46,7 +92,6 @@ def categorize(chunks_dir: str, outdir: str) -> dict:
         with open(chunk_path, "r") as f:
             reader = csv.DictReader(f)
 
-            # Validate header contains expected columns
             if reader.fieldnames is None or "id" not in reader.fieldnames:
                 print(
                     f"  WARNING: Skipping {os.path.basename(chunk_path)}"
@@ -68,49 +113,44 @@ def categorize(chunks_dir: str, outdir: str) -> dict:
                 skipped_chunks += 1
                 continue
 
-            for row in reader:
+            perm_indices = _find_permission_indices(reader.fieldnames)
+
+            for gam_row in reader:
                 total_files += 1
-                file_id = row.get("id", "")
 
-                for key, val in row.items():
-                    if key is None or val is None:
+                # Extract file-level fields once
+                file_data = {
+                    k: _sanitize_cell(gam_row.get(k, "")) for k in _FILE_FIELDS
+                }
+
+                # Iterate through each permission on this file
+                for idx in perm_indices:
+                    prefix = f"permissions.{idx}"
+                    role = gam_row.get(f"{prefix}.role", "")
+
+                    # Skip empty permission slots and owner permissions
+                    if not role or role == "owner":
                         continue
-                    if not (key.endswith(".type") and "permissions" in key):
-                        continue
-                    if val != "anyone":
-                        continue
 
-                    # Found type=anyone. Check allowFileDiscovery.
-                    prefix = key.rsplit(".type", 1)[0]
-                    discovery = (
-                        row.get(prefix + ".allowFileDiscovery", "").strip()
-                    )
+                    # Build output row: file fields + permission fields
+                    out_row = dict(file_data)
+                    for subfield in _PERM_SUBFIELDS:
+                        gam_key = f"{prefix}.{subfield}"
+                        out_row[f"permission.{subfield}"] = _sanitize_cell(
+                            gam_row.get(gam_key, "")
+                        )
 
-                    # Sanitize output fields for CSV injection
-                    sanitized = {
-                        k: _sanitize_cell(row.get(k, "")) for k in out_fields
-                    }
+                    rows.append(out_row)
+                    total_permissions += 1
 
-                    if discovery in ("True", "true"):
-                        if file_id not in seen_internet:
-                            seen_internet.add(file_id)
-                            internet_rows.append(sanitized)
-                    else:
-                        if file_id not in seen_link:
-                            seen_link.add(file_id)
-                            link_rows.append(sanitized)
-                    break
-
-    for path, rows in [(internet_file, internet_rows), (link_file, link_rows)]:
-        with open(path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=out_fields)
-            w.writeheader()
-            w.writerows(rows)
+    with open(out_file, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=OUT_FIELDS)
+        w.writeheader()
+        w.writerows(rows)
 
     return {
         "total_files": total_files,
-        "public_internet": len(internet_rows),
-        "public_link": len(link_rows),
+        "total_permissions": total_permissions,
         "skipped_chunks": skipped_chunks,
     }
 
@@ -131,11 +171,7 @@ if __name__ == "__main__":
     results = categorize(chunks, base)
 
     print(f"  Total files scanned: {results['total_files']}")
-    print(
-        f"  Publicly discoverable (internet searchable):"
-        f" {results['public_internet']}"
-    )
-    print(f"  Anyone with the link: {results['public_link']}")
+    print(f"  Non-owner permissions found: {results['total_permissions']}")
 
     if results["skipped_chunks"] > 0:
         print(
