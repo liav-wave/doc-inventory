@@ -1,6 +1,8 @@
-# Google Workspace Public Document Inventory
+# Google Workspace Public Document Inventory (V2)
 
-Finds all publicly accessible documents across a Google Workspace domain — both shared drives and personal drives — using [GAMADV-XTD3 / GAM 7](https://github.com/GAM-team/GAM).
+Finds all publicly accessible documents across a Google Workspace domain — both shared drives and personal drives — using [GAM 7](https://github.com/GAM-team/GAM).
+
+This is the **V2** tool. It extends V1 by also scanning **shared drives**, not just user-owned drives. Both versions use the same GAM installation and can be run independently. See the main setup guide for GAM installation and V1 instructions.
 
 ## Output
 
@@ -8,62 +10,40 @@ Results are written to `~/doc_inventory/`:
 
 | File | Description |
 |------|-------------|
-| `public_internet.csv` | Files discoverable via internet search (`type=anyone`, `allowFileDiscovery=True`) |
-| `public_link.csv` | Files accessible to anyone with the link (`type=anyone`, `allowFileDiscovery=False`) |
+| `filelistperms.csv` | One row per non-owner permission across all files (shared and personal drives) |
 | `run.log` | Timestamped audit log of the entire run |
 | `gam_errors.log` | GAM stderr output (only present if errors occurred) |
 
-Each output CSV contains: `Owner`, `id`, `name`, `mimeType`, `webViewLink`.
+Output CSV columns (matches V1 format for Google Sheet ingestion):
+
+`Owner`, `id`, `name`, `mimeType`, `permission.allowFileDiscovery`, `permission.deleted`, `permission.displayName`, `permission.domain`, `permission.emailAddress`, `permission.id`, `permission.role`, `permission.type`
 
 ## Prerequisites
 
+These should already be in place if you followed the main setup guide:
+
+- **GAM 7** installed and configured (project created, OAuth credentials set up, service account authorized)
+- All Drive scopes **PASS** when running `gam user <admin> check serviceaccount`
 - **zsh** — required (default on macOS; install via package manager on Linux)
-- [GAM 7 (GAMADV-XTD3)](https://github.com/GAM-team/GAM) installed and configured
-- OAuth client credentials created (`gam oauth create`)
-- Service account with domain-wide delegation authorized, including Drive scopes (`gam user <admin> check serviceaccount` — all scopes should PASS)
-- Python 3.8+
+- **Python 3.8+** — required for the categorization step
 
-## Setup
+## Usage
 
-1. Clone this repo and ensure the script is executable:
+1. Make the script executable (first time only):
 
    ```sh
    chmod +x gam_inventory.sh
    ```
 
-2. Install and configure [GAM 7](https://github.com/GAM-team/GAM/wiki) if not already present:
+2. Run it, replacing the paths with your actual GAM binary path and admin email:
 
    ```sh
-   # Create OAuth credentials
-   gam oauth create
-
-   # Create and authorize the service account for domain-wide delegation
-   gam create project
-   gam user admin@clientdomain.com check serviceaccount
+   GAM_PATH=/path/to/gam GAM_ADMIN=admin@yourdomain.com ./gam_inventory.sh
    ```
 
-   All scopes must show **PASS**, especially the Drive scopes. If any fail, follow the prompts to authorize them in the Google Admin Console under **Security > API Controls > Domain-wide Delegation**.
+   To find your GAM binary path, run `which gam` or check the alias the installer added to your shell profile.
 
-3. Set the required environment variables:
-
-   ```sh
-   export GAM_PATH="/path/to/gam"
-   export GAM_ADMIN="admin@clientdomain.com"
-   ```
-
-   `GAM_ADMIN` must be a **super-admin** account. The script uses this identity to enumerate all shared drives, list all users, and temporarily access drives the admin isn't a member of.
-
-   Or pass them as positional arguments (see Usage below).
-
-## Usage
-
-```sh
-# Using environment variables
-GAM_PATH=/path/to/gam GAM_ADMIN=admin@example.com ./gam_inventory.sh
-
-# Or using positional arguments
-./gam_inventory.sh /path/to/gam admin@example.com
-```
+   `GAM_ADMIN` must be a **super-admin** account. The script uses this identity to enumerate all shared drives, list all users, and temporarily access drives the admin is not a member of.
 
 The script runs in three phases:
 
@@ -73,20 +53,12 @@ The script runs in three phases:
 
 Intermediate data (raw file listings, user/drive lists) is automatically cleaned up after categorization. Only the final output CSVs and logs are retained.
 
-### Re-categorize without re-fetching
-
-If you need to re-process existing chunk data before cleanup runs (e.g., during development), you can run the categorizer directly:
-
-```sh
-python3 categorize.py ~/doc_inventory
-```
-
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `gam_inventory.sh` | Main script — collects file metadata via GAM |
-| `categorize.py` | Processes raw GAM CSV chunks and filters for public files |
+| `gam_inventory.sh` | Main script — collects file metadata via GAM, then calls `categorize.py` |
+| `categorize.py` | Processes raw GAM CSV chunks and filters for public files (called automatically) |
 
 ## How it works
 
@@ -94,24 +66,33 @@ GAM produces CSV output where each file's permissions are flattened into columns
 
 To handle this, the script writes each GAM call to a separate CSV chunk file. The categorizer processes each chunk independently with its own header, avoiding column misalignment.
 
-A file is considered publicly shared when any `permissions.N.type` column equals `anyone`. The `allowFileDiscovery` flag on that same permission distinguishes internet-searchable files from link-only files.
+The categorizer expands each file's permissions into one row per non-owner permission, mapping GAM's indexed `permissions.N.field` columns to the flat `permission.field` format used by V1. Owner permissions are excluded (matching V1's `pm not role owner` filter).
 
-## Important: Shared Drive ACL behavior
+## Shared Drive ACL behavior
 
 For shared drives the admin is **not** already a member of, the script temporarily grants **organizer** access, scans the drive, then immediately removes the access. This is tracked and cleaned up automatically, including on script interruption (SIGINT/SIGTERM).
 
 **Communicate this to the client before running.** The temporary ACL grants will appear in the Google Admin audit log. If the script crashes hard enough that the trap doesn't fire (e.g., `kill -9`, power loss), orphaned ACLs may remain. Check for these with:
 
 ```sh
-# List ACLs on a specific shared drive
-gam print drivefileacls <drive_id> | grep "$GAM_ADMIN"
+gam print drivefileacls <drive_id> | grep "admin@yourdomain.com"
 ```
 
 To remove an orphaned ACL manually:
 
 ```sh
-gam delete drivefileacl <drive_id> admin@clientdomain.com
+gam delete drivefileacl <drive_id> admin@yourdomain.com
 ```
+
+## V1 vs V2 comparison
+
+| | V1 | V2 |
+|---|---|---|
+| **Scans user-owned drives** | Yes | Yes |
+| **Scans shared drives** | No | Yes |
+| **Output format** | Raw CSV (use with spreadsheet tool) | `filelistperms.csv` — same column format as V1, compatible with the same Google Sheet |
+| **Maturity** | Battle-tested | Internally tested |
+| **GAM version** | GAM 7 | GAM 7 |
 
 ## Running tests
 
